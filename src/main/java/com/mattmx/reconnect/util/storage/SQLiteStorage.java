@@ -7,23 +7,24 @@ import org.simpleyaml.configuration.file.FileConfiguration;
 import java.sql.*;
 
 public class SQLiteStorage extends StorageMethod {
-    private Statement statement;
+    private Connection connection;
 
     @Override
     public void init() {
         try {
             FileConfiguration config = Config.DEFAULT;
             Class.forName("org.sqlite.JDBC");
-            Connection conn = DriverManager.getConnection(
+            this.connection = DriverManager.getConnection(
                     "jdbc:sqlite:" + ReconnectVelocity.get().getDataFolder() + "/"
                             + config.getString("storage.data.database", "reconnect.db")
             );
-            statement = conn.createStatement();
-            statement.setQueryTimeout(0);
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS reconnect_data(" +
-                    "uuid TEXT," +
-                    "lastserver TEXT," +
-                    "PRIMARY KEY(uuid))");
+            try (Statement statement = connection.createStatement()) {
+                statement.setQueryTimeout(0);
+                statement.executeUpdate("CREATE TABLE IF NOT EXISTS reconnect_data(" +
+                        "uuid TEXT," +
+                        "lastserver TEXT," +
+                        "PRIMARY KEY(uuid))");
+            }
         } catch (SQLException | ClassNotFoundException e) {
             e.printStackTrace();
         }
@@ -31,7 +32,7 @@ public class SQLiteStorage extends StorageMethod {
 
     @Override
     public void setLastServer(String uuid, String servername) {
-        try {
+        try (Statement statement = connection.createStatement()) {
             statement.executeUpdate(
                     "INSERT OR IGNORE INTO reconnect_data VALUES ('" + uuid + "', '" + servername + "');" +
                             "UPDATE reconnect_data SET lastserver = '" + servername + "' where uuid ='" + uuid + "'"
@@ -43,7 +44,7 @@ public class SQLiteStorage extends StorageMethod {
 
     @Override
     public String getLastServer(String uuid) {
-        try {
+        try (Statement statement = connection.createStatement()) {
             ResultSet rs = statement.executeQuery("SELECT lastserver FROM reconnect_data WHERE uuid = '" + uuid + "'");
             if (rs.next()) {
                 return rs.getString("lastserver");
@@ -57,7 +58,7 @@ public class SQLiteStorage extends StorageMethod {
     @Override
     public void save() {
         try {
-            statement.closeOnCompletion();
+            connection.close();
         } catch (SQLException e) {
             e.printStackTrace();
         }
