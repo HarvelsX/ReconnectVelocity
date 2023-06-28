@@ -5,17 +5,24 @@ import com.mattmx.reconnect.util.Config;
 import com.mattmx.reconnect.util.ReconnectUtil;
 import com.mattmx.reconnect.util.VelocityChat;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.LoginEvent;
+import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
-import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.audience.MessageType;
+import org.simpleyaml.configuration.Configuration;
 import org.simpleyaml.configuration.file.FileConfiguration;
+import org.simpleyaml.configuration.file.YamlConfiguration;
+import org.slf4j.Logger;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +31,7 @@ public class Listener {
 
     @Subscribe
     public void choose(PlayerChooseInitialServerEvent e) {
+        if (isForcedHost(e)) return;
         Player player = e.getPlayer();
         String prev = ReconnectVelocity.get().getStorageManager().get().getLastServer(player.getUniqueId().toString());
         RegisteredServer server;
@@ -61,6 +69,47 @@ public class Listener {
         }
     }
 
+    private boolean isForcedHost(PlayerChooseInitialServerEvent e) {
+        Logger logger = ReconnectVelocity.get().logger();
+
+        List<String> attemptConnectionOrder = ReconnectVelocity.get().getServer()
+                .getConfiguration().getAttemptConnectionOrder();
+        Optional<String> defaultServerOptional = getFirstAvailableServer(attemptConnectionOrder);
+        logger.debug("Default server: {}", defaultServerOptional);
+
+        Optional<RegisteredServer> joiningServerOptional = e.getInitialServer();
+        logger.debug("Joining server: {}", joiningServerOptional);
+
+        if (joiningServerOptional.isPresent() && defaultServerOptional.isPresent()) {
+            if (joiningServerOptional.get().getServerInfo().getName().equals(defaultServerOptional.get())) {
+                logger.debug("Player connecting to default server {}, assuming not a forced host",
+                        defaultServerOptional.get());
+                // TODO: It's possible that the player is connecting to the default server on purpose i.e.
+                //  via a forced host. This method won't work in that case.
+            } else {
+                logger.debug("Player connecting to non-default server {}, is forced host",
+                        joiningServerOptional.get().getServerInfo().getName());
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private Optional<String> getFirstAvailableServer(List<String> serverList) {
+        for (String server : serverList) {
+            try {
+                final RegisteredServer registeredServer = ReconnectUtil.getServer(server);
+                if (registeredServer != null) {
+                    registeredServer.ping();
+                    return Optional.of(server);
+                }
+            } catch (CancellationException | CompletionException ignored) {
+            }
+        }
+        return Optional.empty();
+    }
+
     @Subscribe
     public void change(ServerConnectedEvent e) {
         ReconnectVelocity.get().getStorageManager().get().setLastServer(e.getPlayer().getUniqueId().toString(), e.getServer().getServerInfo().getName());
@@ -74,6 +123,30 @@ public class Listener {
                         .clickEvent(ClickEvent.clickEvent(ClickEvent.Action.OPEN_URL, ReconnectVelocity.get().getUpdateChecker().getLink()))
                         .hoverEvent(HoverEvent.showText(VelocityChat.color("&6Click to update!"))), MessageType.SYSTEM);
             }
+        }
+    }
+
+    /**
+     * Prevents switching to a fallback server if the server is not on the blacklist.
+     * Off by default and enabled in the configuration.
+     * Also uses alternative message, if available.
+     *
+     * @param e injected event
+     */
+    @Subscribe
+    public void kicked(KickedFromServerEvent e) {
+        Configuration config = Config.DEFAULT;
+        if (!config.getBoolean("prevent-fallback", false)) return;
+
+        RegisteredServer server = e.getServer();
+        if (config.getStringList("blacklist").contains(server.getServerInfo().getName())) return;
+
+        KickedFromServerEvent.ServerKickResult result = e.getResult();
+        if (result instanceof KickedFromServerEvent.RedirectPlayer)  {
+            String string = config.getString("prevent-fallback-message", "");
+            Component reason = string.isEmpty() ? e.getServerKickReason().orElse(Component.empty())
+                    : VelocityChat.color(string);
+            e.setResult(KickedFromServerEvent.DisconnectPlayer.create(reason));
         }
     }
 }
